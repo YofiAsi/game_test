@@ -1,6 +1,6 @@
-# Simple UID-Name Database Server
+# Simple UID-Boolean Database Server
 
-A simple Python Flask server that manages a database mapping UIDs to names.
+A simple Python Flask server that manages a database mapping UIDs to boolean values.
 
 ## Setup and Run
 
@@ -18,59 +18,53 @@ The server will start at http://127.0.0.1:5000
 
 ## API Endpoints
 
-### Get all users
-- GET `/users`
-- Returns: JSON array of all user objects
+### Get a new UID
+- GET `/uid/new`
+- Creates a new UID with status set to false
+- Returns: `{"uid": "abc123xyz", "status": false}`
 
-### Get user by UID
-- GET `/users/<uid>`
-- Returns: User object if found, error if not found
+### Get UID status
+- GET `/uid/<uid>`
+- Returns the status of the specified UID: `{"uid": "abc123xyz", "status": false}`
+- Error: `{"error": "UID not found"}` (404) if UID doesn't exist
 
-### Create a new user
-- POST `/users`
-- Body: `{"uid": "user123", "name": "John Doe"}`
-- Returns: Created user object
+### Update UID status
+- PUT `/uid/<uid>`
+- Body: `{"status": true}` or `{"status": false}`
+- Returns the updated UID object: `{"uid": "abc123xyz", "status": true}`
+- Error: `{"error": "UID not found"}` (404) if UID doesn't exist
 
-### Update a user
-- PUT `/users/<uid>`
-- Body: `{"name": "Jane Doe"}`
-- Returns: Updated user object
-
-### Delete a user
-- DELETE `/users/<uid>`
-- Returns: `{"result": true}` on success
-
-### New Lookup Endpoint
-- POST `/lookup`
-- Supports two operations:
-  1. When sending a name: `{"name": "John Doe"}`
-     - If name exists: Returns the existing UID
-     - If name doesn't exist: Creates a new UID and returns it
-  2. When sending a UID: `{"uid": "123abc"}`
-     - If UID exists: Returns the associated name
-     - If UID doesn't exist: Returns "not found"
+### Combined endpoint for UID operations
+- POST `/uid`
+- Supports three operations via the `action` parameter:
+  1. Create a new UID: `{"action": "new"}`
+     - Returns: `{"uid": "abc123xyz", "status": false}`
+  2. Get UID status: `{"action": "get", "uid": "abc123xyz"}`
+     - Returns: `{"uid": "abc123xyz", "status": false}`
+     - Error: `{"error": "UID not found"}` (404) if UID doesn't exist
+  3. Update UID status: `{"action": "update", "uid": "abc123xyz", "status": true}`
+     - Returns: `{"uid": "abc123xyz", "status": true}`
+     - Error: `{"error": "UID not found"}` (404) if UID doesn't exist
 
 ## Example Usage (with curl)
 
 ```bash
-# Create a user
-curl -X POST http://127.0.0.1:5000/users -H "Content-Type: application/json" -d '{"uid": "user123", "name": "John Doe"}'
+# Create a new UID
+curl http://127.0.0.1:5000/uid/new
 
-# Get all users
-curl http://127.0.0.1:5000/users
+# Get status of a UID
+curl http://127.0.0.1:5000/uid/abc123xyz
 
-# Get a specific user
-curl http://127.0.0.1:5000/users/user123
+# Update status of a UID
+curl -X PUT http://127.0.0.1:5000/uid/abc123xyz -H "Content-Type: application/json" -d '{"status": true}'
 
-# Update a user
-curl -X PUT http://127.0.0.1:5000/users/user123 -H "Content-Type: application/json" -d '{"name": "Jane Doe"}'
+# Using the combined endpoint:
+# Create a new UID
+curl -X POST http://127.0.0.1:5000/uid -H "Content-Type: application/json" -d '{"action": "new"}'
 
-# Delete a user
-curl -X DELETE http://127.0.0.1:5000/users/user123
+# Get status of a UID
+curl -X POST http://127.0.0.1:5000/uid -H "Content-Type: application/json" -d '{"action": "get", "uid": "abc123xyz"}'
 
-# Look up or create a UID for a name
-curl -X POST http://127.0.0.1:5000/lookup -H "Content-Type: application/json" -d '{"name": "John Doe"}'
-
-# Look up a name by UID
-curl -X POST http://127.0.0.1:5000/lookup -H "Content-Type: application/json" -d '{"uid": "user123"}'
+# Update status of a UID
+curl -X POST http://127.0.0.1:5000/uid -H "Content-Type: application/json" -d '{"action": "update", "uid": "abc123xyz", "status": true}'
 ``` 

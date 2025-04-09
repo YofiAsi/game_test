@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import sqlite3
 import os
 import urllib.parse
-import uuid
 import random
 import string
 
@@ -34,112 +33,32 @@ def init_db():
     conn, is_postgres = get_db_connection()
     cur = conn.cursor()
     
-    # Same SQL works for both SQLite and PostgreSQL in this case
-    cur.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        uid TEXT PRIMARY KEY,
-        name TEXT NOT NULL
-    )
-    ''')
+    # Drop existing table if it exists
+    cur.execute('DROP TABLE IF EXISTS users')
+    
+    # Create new table with UID and status (boolean)
+    if is_postgres:
+        # PostgreSQL uses boolean type
+        cur.execute('''
+        CREATE TABLE IF NOT EXISTS uid_map (
+            uid TEXT PRIMARY KEY,
+            status BOOLEAN NOT NULL DEFAULT FALSE
+        )
+        ''')
+    else:
+        # SQLite doesn't have a boolean type, using integer (0/1)
+        cur.execute('''
+        CREATE TABLE IF NOT EXISTS uid_map (
+            uid TEXT PRIMARY KEY,
+            status INTEGER NOT NULL DEFAULT 0
+        )
+        ''')
     
     conn.commit()
     conn.close()
 
 # Initialize database on startup
 init_db()
-
-@app.route('/users', methods=['GET'])
-def get_all_users():
-    conn, is_postgres = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT uid, name FROM users')
-    
-    users = [{'uid': row[0], 'name': row[1]} for row in cur.fetchall()]
-    
-    conn.close()
-    return jsonify(users)
-
-@app.route('/users/<uid>', methods=['GET'])
-def get_user(uid):
-    conn, is_postgres = get_db_connection()
-    cur = conn.cursor()
-    
-    placeholder = '%s' if is_postgres else '?'
-    query = f'SELECT uid, name FROM users WHERE uid = {placeholder}'
-    cur.execute(query, (uid,))
-    
-    user = cur.fetchone()
-    conn.close()
-    
-    if user:
-        return jsonify({'uid': user[0], 'name': user[1]})
-    return jsonify({'error': 'User not found'}), 404
-
-@app.route('/users', methods=['POST'])
-def create_user():
-    if not request.json or 'uid' not in request.json or 'name' not in request.json:
-        return jsonify({'error': 'Request must include uid and name'}), 400
-    
-    uid = request.json['uid']
-    name = request.json['name']
-    
-    conn, is_postgres = get_db_connection()
-    cur = conn.cursor()
-    
-    placeholder = '%s' if is_postgres else '?'
-    
-    try:
-        query = f'INSERT INTO users (uid, name) VALUES ({placeholder}, {placeholder})'
-        cur.execute(query, (uid, name))
-        conn.commit()
-        conn.close()
-        return jsonify({'uid': uid, 'name': name}), 201
-    except (sqlite3.IntegrityError, Exception) as e:
-        conn.close()
-        return jsonify({'error': 'User with this uid already exists'}), 400
-
-@app.route('/users/<uid>', methods=['PUT'])
-def update_user(uid):
-    if not request.json or 'name' not in request.json:
-        return jsonify({'error': 'Request must include name'}), 400
-    
-    name = request.json['name']
-    
-    conn, is_postgres = get_db_connection()
-    cur = conn.cursor()
-    
-    placeholder = '%s' if is_postgres else '?'
-    query = f'UPDATE users SET name = {placeholder} WHERE uid = {placeholder}'
-    cur.execute(query, (name, uid))
-    conn.commit()
-    
-    rowcount = cur.rowcount
-    
-    if rowcount == 0:
-        conn.close()
-        return jsonify({'error': 'User not found'}), 404
-    
-    conn.close()
-    return jsonify({'uid': uid, 'name': name})
-
-@app.route('/users/<uid>', methods=['DELETE'])
-def delete_user(uid):
-    conn, is_postgres = get_db_connection()
-    cur = conn.cursor()
-    
-    placeholder = '%s' if is_postgres else '?'
-    query = f'DELETE FROM users WHERE uid = {placeholder}'
-    cur.execute(query, (uid,))
-    conn.commit()
-    
-    rowcount = cur.rowcount
-    
-    if rowcount == 0:
-        conn.close()
-        return jsonify({'error': 'User not found'}), 404
-    
-    conn.close()
-    return jsonify({'result': True})
 
 # Generate a 10-character UID
 def generate_uid(length=10):
@@ -148,71 +67,154 @@ def generate_uid(length=10):
     uid = ''.join(random.choice(characters) for _ in range(length))
     return uid
 
-@app.route('/lookup', methods=['POST'])
-def lookup():
+@app.route('/uid/new', methods=['GET'])
+def new_uid():
+    """Create a new UID with default boolean value (false)"""
+    conn, is_postgres = get_db_connection()
+    cur = conn.cursor()
+    
+    placeholder = '%s' if is_postgres else '?'
+    
+    # Generate a unique UID
+    while True:
+        uid = generate_uid(10)
+        query = f'SELECT uid FROM uid_map WHERE uid = {placeholder}'
+        cur.execute(query, (uid,))
+        existing = cur.fetchone()
+        if not existing:
+            break
+    
+    # Default status is false (0 for SQLite, False for PostgreSQL)
+    status = False if is_postgres else 0
+    query = f'INSERT INTO uid_map (uid, status) VALUES ({placeholder}, {placeholder})'
+    cur.execute(query, (uid, status))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'uid': uid, 'status': False})
+
+@app.route('/uid/<uid>', methods=['GET'])
+def get_uid_status(uid):
+    """Get the boolean status of a UID"""
+    conn, is_postgres = get_db_connection()
+    cur = conn.cursor()
+    
+    placeholder = '%s' if is_postgres else '?'
+    query = f'SELECT status FROM uid_map WHERE uid = {placeholder}'
+    cur.execute(query, (uid,))
+    
+    result = cur.fetchone()
+    conn.close()
+    
+    if result:
+        # Convert to boolean regardless of database type
+        status = bool(result[0])
+        return jsonify({'uid': uid, 'status': status})
+    else:
+        return jsonify({'error': 'UID not found'}), 404
+
+@app.route('/uid/<uid>', methods=['PUT'])
+def update_uid_status(uid):
+    """Update the boolean status of a UID"""
+    if not request.json or 'status' not in request.json:
+        return jsonify({'error': 'Request must include status boolean'}), 400
+    
+    # Get status from request and validate it's a boolean
     try:
-        if not request.json:
-            return jsonify({'error': 'Request must include json data'}), 400
+        status = bool(request.json['status'])
+    except:
+        return jsonify({'error': 'Status must be a boolean value'}), 400
+    
+    conn, is_postgres = get_db_connection()
+    cur = conn.cursor()
+    
+    placeholder = '%s' if is_postgres else '?'
+    
+    # Check if UID exists
+    query = f'SELECT uid FROM uid_map WHERE uid = {placeholder}'
+    cur.execute(query, (uid,))
+    existing = cur.fetchone()
+    
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'UID not found'}), 404
+    
+    # Convert boolean to appropriate type for the database
+    db_status = status if is_postgres else int(status)
+    
+    # Update the status
+    query = f'UPDATE uid_map SET status = {placeholder} WHERE uid = {placeholder}'
+    cur.execute(query, (db_status, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'uid': uid, 'status': status})
+
+@app.route('/uid', methods=['POST'])
+def lookup_uid():
+    """Combined endpoint for different UID operations"""
+    try:
+        # Request for a new UID
+        if request.json and request.json.get('action') == 'new':
+            return new_uid()
         
-        conn, is_postgres = get_db_connection()
-        cur = conn.cursor()
-        
-        # Use the correct placeholder based on database type
-        placeholder = '%s' if is_postgres else '?'
-        
-        # User is sending a name to look up or create
-        if 'name' in request.json:
-            name = request.json['name']
-            
-            # Check if name already exists
-            query = f'SELECT uid FROM users WHERE name = {placeholder}'
-            cur.execute(query, (name,))
-            user = cur.fetchone()
-            
-            if user:
-                # Name exists, return the UID
-                uid = user[0]
-                conn.close()
-                return jsonify({'uid': uid})
-            else:
-                # Name doesn't exist, create new 10-char UID and save
-                # Try to generate a unique UID (avoid collisions)
-                while True:
-                    uid = generate_uid(10)
-                    # Check if this UID already exists
-                    query = f'SELECT uid FROM users WHERE uid = {placeholder}'
-                    cur.execute(query, (uid,))
-                    existing = cur.fetchone()
-                    if not existing:
-                        break
-                
-                query = f'INSERT INTO users (uid, name) VALUES ({placeholder}, {placeholder})'
-                cur.execute(query, (uid, name))
-                conn.commit()
-                conn.close()
-                return jsonify({'uid': uid})
-        
-        # User is sending a UID to look up
-        elif 'uid' in request.json:
+        # Request to get status of an existing UID
+        elif request.json and 'uid' in request.json and request.json.get('action') == 'get':
             uid = request.json['uid']
+            conn, is_postgres = get_db_connection()
+            cur = conn.cursor()
             
-            # Look up UID
-            query = f'SELECT name FROM users WHERE uid = {placeholder}'
+            placeholder = '%s' if is_postgres else '?'
+            query = f'SELECT status FROM uid_map WHERE uid = {placeholder}'
             cur.execute(query, (uid,))
-            user = cur.fetchone()
             
+            result = cur.fetchone()
             conn.close()
-            if user:
-                return jsonify({'name': user[0]})
+            
+            if result:
+                status = bool(result[0])
+                return jsonify({'uid': uid, 'status': status})
             else:
-                return jsonify({'name': 'not found'})
+                return jsonify({'error': 'UID not found'}), 404
         
-        # Invalid request
-        else:
+        # Request to update status of an existing UID
+        elif request.json and 'uid' in request.json and 'status' in request.json and request.json.get('action') == 'update':
+            uid = request.json['uid']
+            try:
+                status = bool(request.json['status'])
+            except:
+                return jsonify({'error': 'Status must be a boolean value'}), 400
+            
+            conn, is_postgres = get_db_connection()
+            cur = conn.cursor()
+            
+            placeholder = '%s' if is_postgres else '?'
+            
+            # Check if UID exists
+            query = f'SELECT uid FROM uid_map WHERE uid = {placeholder}'
+            cur.execute(query, (uid,))
+            existing = cur.fetchone()
+            
+            if not existing:
+                conn.close()
+                return jsonify({'error': 'UID not found'}), 404
+            
+            # Convert boolean to appropriate type for the database
+            db_status = status if is_postgres else int(status)
+            
+            # Update the status
+            query = f'UPDATE uid_map SET status = {placeholder} WHERE uid = {placeholder}'
+            cur.execute(query, (db_status, uid))
+            conn.commit()
             conn.close()
-            return jsonify({'error': 'Request must include either name or uid'}), 400
+            
+            return jsonify({'uid': uid, 'status': status})
+        
+        else:
+            return jsonify({'error': 'Invalid request'}), 400
+    
     except Exception as e:
-        print(f"Error in lookup: {str(e)}")
+        print(f"Error in lookup_uid: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
