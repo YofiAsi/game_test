@@ -24,33 +24,23 @@ def get_db_connection():
             host=url.hostname,
             port=url.port
         )
-        return conn
+        return conn, True  # True indicates PostgreSQL
     else:
         # Use SQLite for local development
-        return sqlite3.connect('users.db')
+        return sqlite3.connect('users.db'), False  # False indicates SQLite
 
 # Initialize the database
 def init_db():
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
     
-    # Check if DATABASE_URL environment variable exists (for Heroku)
-    if os.environ.get('DATABASE_URL'):
-        # PostgreSQL syntax
-        cur.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            uid TEXT PRIMARY KEY,
-            name TEXT NOT NULL
-        )
-        ''')
-    else:
-        # SQLite syntax
-        cur.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            uid TEXT PRIMARY KEY,
-            name TEXT NOT NULL
-        )
-        ''')
+    # Same SQL works for both SQLite and PostgreSQL in this case
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        uid TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+    )
+    ''')
     
     conn.commit()
     conn.close()
@@ -60,26 +50,24 @@ init_db()
 
 @app.route('/users', methods=['GET'])
 def get_all_users():
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
     cur.execute('SELECT uid, name FROM users')
     
-    # Check if DATABASE_URL environment variable exists (for Heroku)
-    if os.environ.get('DATABASE_URL'):
-        # For PostgreSQL
-        users = [{'uid': row[0], 'name': row[1]} for row in cur.fetchall()]
-    else:
-        # For SQLite
-        users = [{'uid': row[0], 'name': row[1]} for row in cur.fetchall()]
+    users = [{'uid': row[0], 'name': row[1]} for row in cur.fetchall()]
     
     conn.close()
     return jsonify(users)
 
 @app.route('/users/<uid>', methods=['GET'])
 def get_user(uid):
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
-    cur.execute('SELECT uid, name FROM users WHERE uid = %s', (uid,))
+    
+    placeholder = '%s' if is_postgres else '?'
+    query = f'SELECT uid, name FROM users WHERE uid = {placeholder}'
+    cur.execute(query, (uid,))
+    
     user = cur.fetchone()
     conn.close()
     
@@ -95,15 +83,18 @@ def create_user():
     uid = request.json['uid']
     name = request.json['name']
     
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
+    
+    placeholder = '%s' if is_postgres else '?'
+    
     try:
-        # Use %s as placeholder for both SQLite and PostgreSQL
-        cur.execute('INSERT INTO users (uid, name) VALUES (%s, %s)', (uid, name))
+        query = f'INSERT INTO users (uid, name) VALUES ({placeholder}, {placeholder})'
+        cur.execute(query, (uid, name))
         conn.commit()
         conn.close()
         return jsonify({'uid': uid, 'name': name}), 201
-    except (sqlite3.IntegrityError, psycopg2.IntegrityError):
+    except (sqlite3.IntegrityError, Exception) as e:
         conn.close()
         return jsonify({'error': 'User with this uid already exists'}), 400
 
@@ -114,12 +105,14 @@ def update_user(uid):
     
     name = request.json['name']
     
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
-    cur.execute('UPDATE users SET name = %s WHERE uid = %s', (name, uid))
+    
+    placeholder = '%s' if is_postgres else '?'
+    query = f'UPDATE users SET name = {placeholder} WHERE uid = {placeholder}'
+    cur.execute(query, (name, uid))
     conn.commit()
     
-    # Get row count differently for SQLite vs PostgreSQL
     rowcount = cur.rowcount
     
     if rowcount == 0:
@@ -131,12 +124,14 @@ def update_user(uid):
 
 @app.route('/users/<uid>', methods=['DELETE'])
 def delete_user(uid):
-    conn = get_db_connection()
+    conn, is_postgres = get_db_connection()
     cur = conn.cursor()
-    cur.execute('DELETE FROM users WHERE uid = %s', (uid,))
+    
+    placeholder = '%s' if is_postgres else '?'
+    query = f'DELETE FROM users WHERE uid = {placeholder}'
+    cur.execute(query, (uid,))
     conn.commit()
     
-    # Get row count differently for SQLite vs PostgreSQL
     rowcount = cur.rowcount
     
     if rowcount == 0:
@@ -155,59 +150,70 @@ def generate_uid(length=10):
 
 @app.route('/lookup', methods=['POST'])
 def lookup():
-    if not request.json:
-        return jsonify({'error': 'Request must include json data'}), 400
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    # User is sending a name to look up or create
-    if 'name' in request.json:
-        name = request.json['name']
+    try:
+        if not request.json:
+            return jsonify({'error': 'Request must include json data'}), 400
         
-        # Check if name already exists
-        cur.execute('SELECT uid FROM users WHERE name = %s', (name,))
-        user = cur.fetchone()
+        conn, is_postgres = get_db_connection()
+        cur = conn.cursor()
         
-        if user:
-            # Name exists, return the UID
-            uid = user[0]
-            conn.close()
-            return jsonify({'uid': uid})
-        else:
-            # Name doesn't exist, create new 10-char UID and save
-            # Try to generate a unique UID (avoid collisions)
-            while True:
-                uid = generate_uid(10)
-                # Check if this UID already exists
-                cur.execute('SELECT uid FROM users WHERE uid = %s', (uid,))
-                existing = cur.fetchone()
-                if not existing:
-                    break
+        # Use the correct placeholder based on database type
+        placeholder = '%s' if is_postgres else '?'
+        
+        # User is sending a name to look up or create
+        if 'name' in request.json:
+            name = request.json['name']
             
-            cur.execute('INSERT INTO users (uid, name) VALUES (%s, %s)', (uid, name))
-            conn.commit()
+            # Check if name already exists
+            query = f'SELECT uid FROM users WHERE name = {placeholder}'
+            cur.execute(query, (name,))
+            user = cur.fetchone()
+            
+            if user:
+                # Name exists, return the UID
+                uid = user[0]
+                conn.close()
+                return jsonify({'uid': uid})
+            else:
+                # Name doesn't exist, create new 10-char UID and save
+                # Try to generate a unique UID (avoid collisions)
+                while True:
+                    uid = generate_uid(10)
+                    # Check if this UID already exists
+                    query = f'SELECT uid FROM users WHERE uid = {placeholder}'
+                    cur.execute(query, (uid,))
+                    existing = cur.fetchone()
+                    if not existing:
+                        break
+                
+                query = f'INSERT INTO users (uid, name) VALUES ({placeholder}, {placeholder})'
+                cur.execute(query, (uid, name))
+                conn.commit()
+                conn.close()
+                return jsonify({'uid': uid})
+        
+        # User is sending a UID to look up
+        elif 'uid' in request.json:
+            uid = request.json['uid']
+            
+            # Look up UID
+            query = f'SELECT name FROM users WHERE uid = {placeholder}'
+            cur.execute(query, (uid,))
+            user = cur.fetchone()
+            
             conn.close()
-            return jsonify({'uid': uid})
-    
-    # User is sending a UID to look up
-    elif 'uid' in request.json:
-        uid = request.json['uid']
+            if user:
+                return jsonify({'name': user[0]})
+            else:
+                return jsonify({'name': 'not found'})
         
-        # Look up UID
-        cur.execute('SELECT name FROM users WHERE uid = %s', (uid,))
-        user = cur.fetchone()
-        
-        conn.close()
-        if user:
-            return jsonify({'name': user[0]})
+        # Invalid request
         else:
-            return jsonify({'name': 'not found'})
-    
-    # Invalid request
-    else:
-        conn.close()
-        return jsonify({'error': 'Request must include either name or uid'}), 400
+            conn.close()
+            return jsonify({'error': 'Request must include either name or uid'}), 400
+    except Exception as e:
+        print(f"Error in lookup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
