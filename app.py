@@ -4,8 +4,19 @@ import os
 import urllib.parse
 import random
 import string
+from flask_cors import CORS
 
 app = Flask(__name__)
+
+# Configure CORS to allow requests from itch.io domains
+CORS(app, resources={r"/*": {"origins": [
+    "https://*.itch.io", 
+    "https://*.itch.zone", 
+    "https://itch.io",
+    "https://itch.zone",
+    "https://html.itch.zone",
+    "https://html-classic.itch.zone",
+]}})
 
 # Database connection
 def get_db_connection():
