@@ -40,6 +40,16 @@ The server will start at http://127.0.0.1:5000
 - DELETE `/users/<uid>`
 - Returns: `{"result": true}` on success
 
+### New Lookup Endpoint
+- POST `/lookup`
+- Supports two operations:
+  1. When sending a name: `{"name": "John Doe"}`
+     - If name exists: Returns the existing UID
+     - If name doesn't exist: Creates a new UID and returns it
+  2. When sending a UID: `{"uid": "123abc"}`
+     - If UID exists: Returns the associated name
+     - If UID doesn't exist: Returns "not found"
+
 ## Example Usage (with curl)
 
 ```bash
@@ -57,4 +67,10 @@ curl -X PUT http://127.0.0.1:5000/users/user123 -H "Content-Type: application/js
 
 # Delete a user
 curl -X DELETE http://127.0.0.1:5000/users/user123
+
+# Look up or create a UID for a name
+curl -X POST http://127.0.0.1:5000/lookup -H "Content-Type: application/json" -d '{"name": "John Doe"}'
+
+# Look up a name by UID
+curl -X POST http://127.0.0.1:5000/lookup -H "Content-Type: application/json" -d '{"uid": "user123"}'
 ``` 

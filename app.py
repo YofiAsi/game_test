@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 import sqlite3
 import os
 import urllib.parse
+import uuid
+import random
+import string
 
 app = Flask(__name__)
 
@@ -142,6 +145,69 @@ def delete_user(uid):
     
     conn.close()
     return jsonify({'result': True})
+
+# Generate a 10-character UID
+def generate_uid(length=10):
+    # Combine random choice of letters and digits to create 10-char UID
+    characters = string.ascii_letters + string.digits
+    uid = ''.join(random.choice(characters) for _ in range(length))
+    return uid
+
+@app.route('/lookup', methods=['POST'])
+def lookup():
+    if not request.json:
+        return jsonify({'error': 'Request must include json data'}), 400
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # User is sending a name to look up or create
+    if 'name' in request.json:
+        name = request.json['name']
+        
+        # Check if name already exists
+        cur.execute('SELECT uid FROM users WHERE name = %s', (name,))
+        user = cur.fetchone()
+        
+        if user:
+            # Name exists, return the UID
+            uid = user[0]
+            conn.close()
+            return jsonify({'uid': uid})
+        else:
+            # Name doesn't exist, create new 10-char UID and save
+            # Try to generate a unique UID (avoid collisions)
+            while True:
+                uid = generate_uid(10)
+                # Check if this UID already exists
+                cur.execute('SELECT uid FROM users WHERE uid = %s', (uid,))
+                existing = cur.fetchone()
+                if not existing:
+                    break
+            
+            cur.execute('INSERT INTO users (uid, name) VALUES (%s, %s)', (uid, name))
+            conn.commit()
+            conn.close()
+            return jsonify({'uid': uid})
+    
+    # User is sending a UID to look up
+    elif 'uid' in request.json:
+        uid = request.json['uid']
+        
+        # Look up UID
+        cur.execute('SELECT name FROM users WHERE uid = %s', (uid,))
+        user = cur.fetchone()
+        
+        conn.close()
+        if user:
+            return jsonify({'name': user[0]})
+        else:
+            return jsonify({'name': 'not found'})
+    
+    # Invalid request
+    else:
+        conn.close()
+        return jsonify({'error': 'Request must include either name or uid'}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
